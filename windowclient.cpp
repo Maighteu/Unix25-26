@@ -1,15 +1,25 @@
 #include "windowclient.h"
+#include <QCloseEvent>
 #include "ui_windowclient.h"
 #include <QMessageBox>
 #include "dialogmodification.h"
+#include <sys/types.h>
 #include <unistd.h>
+#include <sys/ipc.h>
+#include <sys/msg.h>
+#include <sys/shm.h>
+#include <signal.h>
 
 extern WindowClient *w;
 
 #include "protocole.h"
 
-int idQ, idShm;
+int idQ, idShm, pidClient = getpid();
+char* pShm;
 #define TIME_OUT 120
+bool logged;
+void handlerSIGUSR1(int sig);
+void handlerSIGUSR2(int sig);
 int timeOut = TIME_OUT;
 
 void handlerSIGUSR1(int sig);
@@ -23,18 +33,80 @@ WindowClient::WindowClient(QWidget *parent):QMainWindow(parent),ui(new Ui::Windo
     ::close(2);
     logoutOK();
 
+///////////////////////////////////////////////////////
     // Recuperation de l'identifiant de la file de messages
+    if ((idQ = msgget(CLE, 0)) == -1)
+    {
+      fprintf(stderr, "(CLIENT %d) (ERROR) Impossible de recuperer l'identifiant de la file de message.", pidClient);
+      exit(1);
+    }
     fprintf(stderr,"(CLIENT %d) Recuperation de l'id de la file de messages\n",getpid());
 
+//////////////////////////////////////////////////////////////////
     // Recuperation de l'identifiant de la mémoire partagée
+
+    if ((idShm = shmget(CLE, 0, 0)) == -1)
+    {
+      fprintf(stderr, "(CLIENT %d) (ERROR) Impossible de recuperer l'identifiant de la memoire partagee.\n", pidClient);
+      exit(1);
+    }
     fprintf(stderr,"(CLIENT %d) Recuperation de l'id de la mémoire partagée\n",getpid());
 
+
+///////////////////////////////////////////////////////
     // Attachement à la mémoire partagée
+    if ((pShm = (char*)shmat(idShm, NULL, 0)) == (char*)-1)
+    {
+      fprintf(stderr, "(CLIENT %d) (ERROR) Impossible de s'attacher à la mémoire partagée.", pidClient);
+      exit(1);
+    }
+    fprintf(stderr, "(CLIENT %d) (SUCCESS) Attachement a la memoire partagee reussi", pidClient);
 
+
+///////////////////////////////////////////////////////
     // Armement des signaux
+    struct sigaction sig,sig2;
+    sigfillset(&sig.sa_mask);
+    sigdelset(&sig.sa_mask, SIGUSR1);
+    sig.sa_handler = handlerSIGUSR1;
+    sig.sa_flags = 0;
 
+    if (sigaction(SIGUSR1, &sig, NULL) == -1)
+    {
+      fprintf(stderr, "(CLIENT %d) (ERROR) Erreur d'armement du signal SIGUSR1.", pidClient);
+      exit(1);
+    }
+    printf("(CLIENT %d) (SUCCESS) Signal SIGUSR1 arme\n", pidClient);
+
+    sigfillset(&sig2.sa_mask);
+      sigdelset(&sig2.sa_mask, SIGUSR2);
+      sig2.sa_handler = handlerSIGUSR2;
+      sig2.sa_flags = 0;
+
+    if (sigaction(SIGUSR2, &sig2, NULL) == -1)
+    {
+      fprintf(stderr, "(CLIENT %d) (ERROR) Erreur d'armement du signal SIGUSR2.", pidClient);
+      exit(1);
+    }
+    printf("(CLIENT %d) (SUCCESS) Signal SIGUSR2 arme\n", pidClient);
+
+
+//////////////////////////////////////////////
     // Envoi d'une requete de connexion au serveur
-}
+    MESSAGE requete;  // Structure pour la requête
+
+    requete.type = 1;               // Type pour le serveur
+    requete.expediteur = pidClient;  // PID du client
+    requete.requete = CONNECT;      // Macro définie dans "protocole.h"
+
+    if (msgsnd(idQ, &requete, sizeof(MESSAGE) - sizeof(long), 0) == -1)
+    {
+      fprintf(stderr, "(CLIENT %d) (ERROR) Impossible d'envoyer la requête CONNECT au serveur.", pidClient);
+      exit(1);
+    }
+    printf("(CLIENT %d) (SUCCESS) Envoi d'une requete CONNECT au serveur reussi\n", pidClient);
+
+  }
 
 WindowClient::~WindowClient()
 {
@@ -328,7 +400,38 @@ void WindowClient::dialogueErreur(const char* titre,const char* message)
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void WindowClient::closeEvent(QCloseEvent *event)
 {
-    // TO DO
+  MESSAGE message;
+  message.type = 1; //1 car contact serv
+  message.expediteur = pidClient;
+
+  // Envoi d'une requete LOGOUT si logged
+  if (logged)
+  {
+    message.requete = LOGOUT;
+
+    if (msgsnd(idQ, &message, sizeof(MESSAGE) - sizeof(long), 0) == -1)
+    {
+      dialogueErreur("Erreur", "Impossible d'envoyer la requête de déconnexion du compte."); // Note : Est-ce qu'il faut avertir le client ?
+      fprintf(stderr, "(CLIENT %d) (ERROR) Erreur de msgsnd()\n", pidClient);
+      return;
+    }
+    printf("(CLIENT %d) (SUCCESS) Logout reussi\n", pidClient);
+  }
+
+  // Envoi d'une requete DECONNECT au serveur
+  message.requete = DECONNECT;
+
+  if (msgsnd(idQ, &message, sizeof(MESSAGE) - sizeof(long), 0) == -1)
+  {
+    dialogueErreur("Erreur", "Impossible d'envoyer la requête de déconnexion du serveur."); // Note : Est-ce qu'il faut avertir le client ?
+    fprintf(stderr, "(CLIENT %d) (ERROR) Erreur de msgsnd()\n", pidClient);
+    return;
+  }
+  printf("(CLIENT %d) (SUCCESS) Deconnexion reussie\n", pidClient);
+
+  // Note : Si le serveur ne sait pas qu'on se déconnecte, le client se déconnecte quand même ou pas ?
+  event->accept();
+  exit(0);
 
     QApplication::exit();
 }
@@ -338,14 +441,43 @@ void WindowClient::closeEvent(QCloseEvent *event)
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void WindowClient::on_pushButtonLogin_clicked()
 {
-    // TO DO
+    MESSAGE message;
+    message.type = 1;
+    message.requete = LOGIN;
+    message.expediteur = pidClient;
+    sprintf(message.data1, "%d", isNouveauChecked());
+     if (strcmp(getNom(), "") == 0 || strcmp(getMotDePasse(), "") == 0) // Si au moins un des champs est vide
+  {
+    dialogueErreur("Attention", "Le nom d'utilisateur et le mot de passe doivent être remplis !");
+    return;
+  }
+  strcpy(message.data2, getNom());          // Nom du client
+  strcpy(message.texte, getMotDePasse());   // Mot de passe
 
+  if (msgsnd(idQ, &message, sizeof(MESSAGE) - sizeof(long), 0) == -1)
+  {
+    dialogueErreur("Erreur", "Impossible d'envoyer la requête pour se connecter.");
+    fprintf(stderr, "(CLIENT %d) (ERROR) Erreur de msgsnd()\n", pidClient);
+  }
 }
 
 void WindowClient::on_pushButtonLogout_clicked()
 {
-    // TO DO
-    logoutOK();
+  MESSAGE message;
+  message.type = 1;
+  message.requete = LOGOUT;
+  message.expediteur = pidClient;
+
+  if (msgsnd(idQ, &message, sizeof(MESSAGE) - sizeof(long), 0) == -1)
+  {
+    dialogueErreur("Erreur", "Impossible d'envoyer la requête LOGOUT");
+    fprintf(stderr, "(CLIENT %d) (ERROR) Erreur de msgsnd()\n", pidClient);
+  }
+  printf("(CLIENT %d) (SUCCESS) Envoi de la requete LOGOUT reussi\n", pidClient);
+
+  logged = false;
+  logoutOK();
+  dialogueMessage("Déconnexion", "Vous êtes maitenant déconnecté.");
 }
 
 void WindowClient::on_pushButtonEnvoyer_clicked()
@@ -470,20 +602,25 @@ void WindowClient::on_checkBox5_clicked(bool checked)
 void handlerSIGUSR1(int sig)
 {
     MESSAGE m;
-    
-    // ...msgrcv(idQ,&m,...)
+  
+  if (msgrcv(idQ, &m, sizeof(MESSAGE) - sizeof(long), pidClient, 0) == -1)
+  {
+    fprintf(stderr, "(CLIENT %d) (ERROR) Erreur de msgrcv\n", pidClient);
+    return;
+  }
     
       switch(m.requete)
       {
         case LOGIN :
+                    printf("request received\n");
                     if (strcmp(m.data1,"OK") == 0)
                     {
                       fprintf(stderr,"(CLIENT %d) Login OK\n",getpid());
                       w->loginOK();
-                      w->dialogueMessage("Login...",m.texte);
-                      // ...
+                      w->dialogueMessage("Login reussi",m.texte);
+                      
                     }
-                    else w->dialogueErreur("Login...",m.texte);
+                    else w->dialogueErreur("Login failed",m.texte);
                     break;
 
         case ADD_USER :
@@ -502,4 +639,10 @@ void handlerSIGUSR1(int sig)
                   // TO DO
                   break;
       }
+}
+
+void handlerSIGUSR2(int sig)
+{
+  printf("salut");
+  
 }

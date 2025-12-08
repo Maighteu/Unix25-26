@@ -14,17 +14,32 @@
 #include <mysql.h>
 #include <setjmp.h>
 #include "protocole.h" // contient la cle et la structure d'un message
+#include "Login.h"
+#define FICHIER_CLIENTS "user.dat"
 
-int idQ,idShm,idSem;
+
+int idQ,idShm,idSem, pidServeur = getpid();
+int fdPipe[2];
 TAB_CONNEXIONS *tab;
+sigjmp_buf contexte;
 
 void afficheTab();
+void connectClient(int pidClient);
+void disconnectClient(int pidClient);
+int clientConnecte(int pidClient);
+void envoyerMessage(MESSAGE& m);
+void handlerSIGINT(int signal);
+void handlerSIGCHLD(int signal);
+void closing(int codeSortie);
+void logClient(int pidClient, char* nouveauClient, char* identifiant, char* password);
+void unlogClient(int pidClient);
 
 MYSQL* connexion;
 
 
 int main()
 {
+  int pidPublicite, pidAccesBD;
   // Connection à la BD
   connexion = mysql_init(NULL);
   if (mysql_real_connect(connexion,"localhost","Student","PassStudent1_","PourStudent",0,0,0) == NULL)
@@ -34,6 +49,34 @@ int main()
   }
 
   // Armement des signaux
+ // Armement de SIGINT
+      struct sigaction sig, sigC;
+    sigfillset(&sig.sa_mask);
+    sigdelset(&sig.sa_mask, SIGINT);
+    sig.sa_handler = handlerSIGINT;
+    sig.sa_flags = 0;
+
+  if (sigaction(SIGINT, &sig, NULL) == -1)
+  {
+    fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de sigaction\n", pidServeur);
+    exit(1);
+  }
+  printf("(SERVEUR %d) (SUCCESS) Signal SIGINT arme\n", pidServeur);
+
+  // Armement de SIGCHLD
+  sigfillset(&sigC.sa_mask);
+  sigdelset(&sigC.sa_mask, SIGCHLD);
+  sigC.sa_handler = handlerSIGCHLD;
+  sigC.sa_flags = 0;
+
+  if (sigaction(SIGCHLD, &sigC, NULL) == -1)
+  {
+    fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de sigaction\n", pidServeur);
+    exit(1);
+  }
+  printf("(SERVEUR %d) (SUCCESS) Signal SIGCHLD arme\n", pidServeur);
+
+ 
 
   // Creation des ressources
   fprintf(stderr,"(SERVEUR %d) Creation de la file de messages\n",getpid());
@@ -42,6 +85,16 @@ int main()
     perror("(SERVEUR) Erreur de msgget");
     exit(1);
   }
+
+  // Creation de la memoire partagee
+  if ((idShm = shmget(CLE, 51 * sizeof(char), IPC_CREAT | IPC_EXCL | 0666)) == -1)
+  {
+    fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de shmget()\n", pidServeur);
+    closing(1);
+  }
+  printf("(SERVEUR %d) (SUCCESS) Memoire partagee cree\n", pidServeur);
+
+
 
   // Initialisation du tableau de connexions
   fprintf(stderr,"(SERVEUR %d) Initialisation de la table des connexions\n",getpid());
@@ -85,18 +138,22 @@ int main()
     {
       case CONNECT :  
                       fprintf(stderr,"(SERVEUR %d) Requete CONNECT reçue de %d\n",getpid(),m.expediteur);
+                      connectClient(m.expediteur);
                       break; 
 
       case DECONNECT :  
                       fprintf(stderr,"(SERVEUR %d) Requete DECONNECT reçue de %d\n",getpid(),m.expediteur);
+                      disconnectClient(m.expediteur);
                       break; 
 
       case LOGIN :  
                       fprintf(stderr,"(SERVEUR %d) Requete LOGIN reçue de %d : --%s--%s--%s--\n",getpid(),m.expediteur,m.data1,m.data2,m.texte);
+                      logClient(m.expediteur, m.data1, m.data2, m.texte);
                       break; 
 
       case LOGOUT :  
                       fprintf(stderr,"(SERVEUR %d) Requete LOGOUT reçue de %d\n",getpid(),m.expediteur);
+                      unlogClient(m.expediteur);
                       break;
 
       case ACCEPT_USER :
@@ -169,3 +226,238 @@ void afficheTab()
   fprintf(stderr,"\n");
 }
 
+void envoyerMessage(MESSAGE& m)
+{
+   if (msgsnd(idQ, &m, sizeof(MESSAGE) - sizeof(long), 0) == -1)
+  {
+    printf("erreur d'envoi \n");
+    fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de msgsnd()\n", pidServeur);
+    return;
+  }
+}
+void connectClient(int pidClient)
+{
+  int i = 0;
+  MESSAGE m;
+  while (i < 6 && tab->connexions[i].pidFenetre !=0)
+  {
+    i ++;
+  }
+  if (i>=6)
+  {
+    fprintf(stderr, "(SERVEUR %d) (ERROR) Le serveur n'a plus assez de place pour accepter le client\n", pidServeur);
+
+
+    envoyerMessage(m);
+
+    if (kill(pidClient, SIGUSR1) == -1)
+    {
+      fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de kill()\n", pidServeur);
+    }
+    return;
+    int i = 0;
+  }
+  else  tab->connexions[i].pidFenetre = pidClient;
+}
+
+void disconnectClient(int pidClient)
+{
+  int i = 0;
+
+  if((i = clientConnecte(pidClient)) == -1)
+  {
+    fprintf(stderr, "(SERVEUR %d) (ERROR) Le client a deconnecter n'a pas pu etre trouve dans la table des connexions\n", pidServeur);
+    return;
+  }
+  else tab->connexions[i].pidFenetre = 0;
+}
+
+int clientConnecte(int pidClient)
+{
+  int i = 0;
+  while(i<6 && tab->connexions[i].pidFenetre != pidClient)
+  {
+    i++;
+  }
+  if (i>=6) return -1;
+    else return i;
+}
+
+void closing(int codeSortie)
+{
+/*  if (kill(tab->pidPublicite, SIGKILL) == -1)
+  {
+    fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de kill()\n", pidServeur);
+    codeSortie = 1;
+  }
+  fprintf(stderr, "(SERVEUR %d) (SUCCESS) Processus Publicite tue.\n", pidServeur);*/
+
+  if (msgctl(idQ, IPC_RMID, NULL) == -1) // Si la file de message n'a pas ete supprime
+  {
+    fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de msgctl()\n", pidServeur);
+    codeSortie = 1;
+  }
+  else
+  {
+    printf("(SERVEUR %d) (SUCCESS) File de message supprimee\n", pidServeur);
+  }
+
+
+  if (shmctl(idShm, IPC_RMID, NULL) ==-1)
+  {
+    fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de shmctl\n", pidServeur);
+    codeSortie = 1;
+  }
+  else
+  {
+    printf("(SERVEUR %d) (SUCCESS) Memoire partagee supprimee\n", pidServeur);
+  }
+
+if (close(fdPipe[0]) == -1)
+{
+    fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de fermeture sortie pipe\n", pidServeur);
+  codeSortie = 1;
+}
+else
+{
+    fprintf(stderr, "(SERVEUR %d) (SUCCESS) sortie pipe ferme\n", pidServeur);
+}
+
+if (close(fdPipe[1]) == -1)
+{
+    fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de fermeture entree pipe\n", pidServeur);
+  codeSortie = 1;
+}
+else
+{
+    fprintf(stderr, "(SERVEUR %d) (SUCCESS) entree pipe ferme\n", pidServeur);
+}
+  exit(codeSortie);
+}
+
+void logClient(int pidClient, char* nouveauClient, char *identifiant, char *password)
+{
+  int fd, retour, posClient;
+  bool connexionReussie = false;
+  MESSAGE m;
+  m.type = pidClient;
+  m.expediteur = pidServeur;
+  m.requete = LOGIN;
+
+  printf("%s\n", identifiant);
+  printf("%s\n", password);
+
+  if ((posClient = clientConnecte(pidClient)) == -1)
+  {
+    strcpy(m.texte, "Vous n'êtes pas connecté au serveur. Veuillez redémarrer votre application.");
+
+    envoyerMessage(m);
+
+   {
+      fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de kill()\n", pidServeur);
+    }
+
+    return;
+  }
+
+  // Le client veut créer un compte
+  if (strcmp(nouveauClient,"1") == 0)
+  {
+    printf("recherche nouveaux user\n");
+
+    if (rechercheUser(identifiant) > 0)
+    {
+      strcpy(m.texte, "Account already exist\n");
+    }
+    else
+    {
+      addUser(identifiant, password);
+      connexionReussie = true;
+      strcpy(m.texte, "account created and connected\n");
+    }
+  }
+  
+  // Le client veut se connecter
+  else
+  {
+    printf("recherche old user\n");
+    if (authenticate(identifiant,password) ==true) // Le client existe
+    {
+      printf("authenticate passé\n");
+        connexionReussie = true;
+        strcpy(m.texte, "Connected\n");
+    }
+    else if (authenticate(identifiant,password) == false)
+    {
+      printf("authenticate failed\n");
+      strcpy(m.texte, "Echec d'authentification.\n");
+    }
+    else // Erreur du serveur
+    {
+      fprintf(stderr, "Erreur d'ouverture du fichier %s\n", FICHIER_CLIENTS);
+      strcpy(m.texte, "Server error");
+    }
+  
+  }
+
+
+  if (connexionReussie == true)
+  {
+    printf("connexion réussie \n\n");
+    strcpy(tab->connexions[posClient].nom, identifiant);
+    strcpy(m.data1,"OK");
+  }
+  else // Sinon, on ne le le fait pas.
+  {
+    strcpy(m.data1,"KO");
+  }
+
+  // On envoie le message de reponse au client
+  envoyerMessage(m);
+
+  // On previent le client qu'il a un message
+  if (kill(pidClient, SIGUSR1) == -1)
+  {
+    fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de kill()\n", pidServeur);
+  }
+}
+
+void unlogClient(int pidClient)
+{
+  int posClient;
+
+  // Recherche la position du client.
+  if ((posClient = clientConnecte(pidClient)) == -1)
+  {
+    fprintf(stderr, "(SERVEUR %d) (ERROR) Le client %d n'a pas ete trouve dans la table de connexion. Impossible de delogger le client.\n", pidServeur, pidClient);
+    return;
+  }
+
+  // Supprime le nom du client de la table
+  strcpy(tab->connexions[posClient].nom, "");
+
+  // Envoie un message LOGOUT au processus Caddie.
+  MESSAGE m;
+  m.type = tab->connexions[posClient].pidFenetre;
+  m.requete = LOGOUT;
+  m.expediteur = pidServeur;
+
+  envoyerMessage(m);
+}
+
+
+
+
+void handlerSIGINT(int signal)
+{
+  fprintf(stderr, "\n(SERVEUR %d) (SUCCESS) Signal %d recu\n", pidServeur, signal);
+
+  closing(0);
+}
+
+void handlerSIGCHLD(int signal)
+{
+  fprintf(stderr, "\n(SERVEUR %d) (SUCCESS) Signal %d recu\n", pidServeur, signal);
+
+  closing(0);
+}
