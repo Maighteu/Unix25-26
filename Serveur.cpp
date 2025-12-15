@@ -33,7 +33,9 @@ void handlerSIGCHLD(int signal);
 void closing(int codeSortie);
 void logClient(int pidClient, char* nouveauClient, char* identifiant, char* password);
 void unlogClient(int pidClient);
-
+void acceptUser(char *nom, int pid);
+void refuseUser(char *nom, int pid);
+int rechercheClient(char *nom);
 MYSQL* connexion;
 
 
@@ -144,6 +146,7 @@ int main()
       case DECONNECT :  
                       fprintf(stderr,"(SERVEUR %d) Requete DECONNECT reçue de %d\n",getpid(),m.expediteur);
                       disconnectClient(m.expediteur);
+
                       break; 
 
       case LOGIN :  
@@ -157,11 +160,13 @@ int main()
                       break;
 
       case ACCEPT_USER :
+                      acceptUser(m.data1, m.expediteur);
                       fprintf(stderr,"(SERVEUR %d) Requete ACCEPT_USER reçue de %d\n",getpid(),m.expediteur);
                       break;
 
       case REFUSE_USER :
                       fprintf(stderr,"(SERVEUR %d) Requete REFUSE_USER reçue de %d\n",getpid(),m.expediteur);
+                      refuseUser(m.data1, m.expediteur);
                       break;
 
       case SEND :  
@@ -228,6 +233,8 @@ void afficheTab()
 
 void envoyerMessage(MESSAGE& m)
 {
+  printf("Mon message s'envoie \n");
+  printf("mon message est du type: %d\n", m.requete);
    if (msgsnd(idQ, &m, sizeof(MESSAGE) - sizeof(long), 0) == -1)
   {
     printf("erreur d'envoi \n");
@@ -262,14 +269,46 @@ void connectClient(int pidClient)
 
 void disconnectClient(int pidClient)
 {
-  int i = 0;
+  int posClient;
 
-  if((i = clientConnecte(pidClient)) == -1)
+  if((posClient = clientConnecte(pidClient)) == -1)
   {
     fprintf(stderr, "(SERVEUR %d) (ERROR) Le client a deconnecter n'a pas pu etre trouve dans la table des connexions\n", pidServeur);
     return;
   }
-  else tab->connexions[i].pidFenetre = 0;
+  else
+  {
+  MESSAGE reponse;
+  for(int i; i<6; i++)
+  {
+    if( posClient != i  && strcmp(tab->connexions[i].nom,""))
+    {
+      
+      reponse.type = tab->connexions[i].pidFenetre;
+        reponse.expediteur = pidServeur;
+        reponse.requete = REMOVE_USER;
+        printf("vide liste de contact");
+        printf("J'envoie un nom\n");
+        printf("le nom est %s\n", tab->connexions[posClient].nom);
+        printf("je l'envoie à %ld\n", tab->connexions[i].pidFenetre);
+        
+        strcpy(reponse.data1, "OK");
+        strcpy(reponse.data2, tab->connexions[posClient].nom);
+        envoyerMessage(reponse);
+        sleep(1);
+        if (kill(tab->connexions[i].pidFenetre, SIGUSR1) == -1)
+        {
+          printf("Reponse ne s'envoie pas \n");
+          fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de kill()\n", pidServeur);
+        }
+    }
+  }
+
+   tab->connexions[posClient].pidFenetre = 0;
+   strcpy(tab->connexions[posClient].nom, "");
+  }
+
+  
 }
 
 int clientConnecte(int pidClient)
@@ -285,12 +324,7 @@ int clientConnecte(int pidClient)
 
 void closing(int codeSortie)
 {
-/*  if (kill(tab->pidPublicite, SIGKILL) == -1)
-  {
-    fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de kill()\n", pidServeur);
-    codeSortie = 1;
-  }
-  fprintf(stderr, "(SERVEUR %d) (SUCCESS) Processus Publicite tue.\n", pidServeur);*/
+
 
   if (msgctl(idQ, IPC_RMID, NULL) == -1) // Si la file de message n'a pas ete supprime
   {
@@ -312,26 +346,32 @@ void closing(int codeSortie)
   {
     printf("(SERVEUR %d) (SUCCESS) Memoire partagee supprimee\n", pidServeur);
   }
+  if (kill(tab->pidPublicite, SIGKILL) == -1)
+  {
+    fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de kill()\n", pidServeur);
+    codeSortie = 1;
+  }
+  fprintf(stderr, "(SERVEUR %d) (SUCCESS) Processus Publicite tue.\n", pidServeur);
 
-if (close(fdPipe[0]) == -1)
-{
-    fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de fermeture sortie pipe\n", pidServeur);
-  codeSortie = 1;
-}
-else
-{
-    fprintf(stderr, "(SERVEUR %d) (SUCCESS) sortie pipe ferme\n", pidServeur);
-}
+  if (close(fdPipe[0]) == -1)
+  {
+      fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de fermeture sortie pipe\n", pidServeur);
+    codeSortie = 1;
+  }
+  else
+  {
+      fprintf(stderr, "(SERVEUR %d) (SUCCESS) sortie pipe ferme\n", pidServeur);
+  }
 
-if (close(fdPipe[1]) == -1)
-{
-    fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de fermeture entree pipe\n", pidServeur);
-  codeSortie = 1;
-}
-else
-{
-    fprintf(stderr, "(SERVEUR %d) (SUCCESS) entree pipe ferme\n", pidServeur);
-}
+  if (close(fdPipe[1]) == -1)
+  {
+      fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de fermeture entree pipe\n", pidServeur);
+    codeSortie = 1;
+  }
+  else
+  {
+      fprintf(stderr, "(SERVEUR %d) (SUCCESS) entree pipe ferme\n", pidServeur);
+  }
   exit(codeSortie);
 }
 
@@ -420,6 +460,64 @@ void logClient(int pidClient, char* nouveauClient, char *identifiant, char *pass
   {
     fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de kill()\n", pidServeur);
   }
+
+  // on remplis la table de contact
+  if (connexionReussie == true)
+  {
+    MESSAGE reponse;
+
+  // notre nouveau client reçois les noms des autres clients
+
+    reponse.type = pidClient;
+    reponse.expediteur = pidServeur;
+    reponse.requete = ADD_USER;
+
+    for(int i = 0; i<6; i++)
+    {
+      if((strcmp(tab->connexions[i].nom,identifiant) != 0)&& strcmp(tab->connexions[i].nom,""))
+      {
+        printf("J'envoie un nom\n");
+        printf("le nom est %s\n", tab->connexions[i].nom);
+        printf("je l'envoie à %ld\n", pidClient);
+        strcpy(reponse.data1, "OK");
+        strcpy(reponse.data2, tab->connexions[i].nom);
+        envoyerMessage(reponse);
+        sleep(1);
+         if (kill(pidClient, SIGUSR1) == -1)
+        {
+          printf("Reponse ne s'envoie pas \n");
+          fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de kill()\n", pidServeur);
+        }
+        else printf("le signal s'envoie\n");
+      }
+    }
+
+    for(int i = 0; i<6; i++)
+    {
+      if((strcmp(tab->connexions[i].nom,identifiant) != 0)&& strcmp(tab->connexions[i].nom,""))
+      {
+        reponse.type = tab->connexions[i].pidFenetre;
+        reponse.expediteur = pidServeur;
+        reponse.requete = ADD_USER;
+        printf("J'envoie un nom\n");
+        printf("le nom est %s\n", tab->connexions[i].nom);
+        printf("je l'envoie à %ld\n", identifiant);
+        strcpy(reponse.data1, "OK");
+        strcpy(reponse.data2, identifiant);
+        envoyerMessage(reponse);
+        sleep(1);
+        if (kill(tab->connexions[i].pidFenetre, SIGUSR1) == -1)
+        {
+          printf("Reponse ne s'envoie pas \n");
+          fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de kill()\n", pidServeur);
+        }
+        else printf("le signal s'envoie\n");
+        
+      }
+    }
+
+  }
+
 }
 
 void unlogClient(int pidClient)
@@ -433,9 +531,33 @@ void unlogClient(int pidClient)
     return;
   }
 
+  MESSAGE reponse;
+  for(int i; i<6; i++)
+  {
+    if( posClient != i  && strcmp(tab->connexions[i].nom,""))
+    {
+      
+      reponse.type = tab->connexions[i].pidFenetre;
+        reponse.expediteur = pidServeur;
+        reponse.requete = REMOVE_USER;
+        printf("vide liste de contact");
+        printf("J'envoie un nom\n");
+        printf("le nom est %s\n", tab->connexions[posClient].nom);
+        printf("je l'envoie à %ld\n", tab->connexions[i].pidFenetre);
+        
+        strcpy(reponse.data1, "OK");
+        strcpy(reponse.data2, tab->connexions[posClient].nom);
+        envoyerMessage(reponse);
+        sleep(1);
+        if (kill(tab->connexions[i].pidFenetre, SIGUSR1) == -1)
+        {
+          printf("Reponse ne s'envoie pas \n");
+          fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de kill()\n", pidServeur);
+        }
+    }
+  }
   // Supprime le nom du client de la table
   strcpy(tab->connexions[posClient].nom, "");
-
   // Envoie un message LOGOUT au processus Caddie.
   MESSAGE m;
   m.type = tab->connexions[posClient].pidFenetre;
@@ -443,8 +565,51 @@ void unlogClient(int pidClient)
   m.expediteur = pidServeur;
 
   envoyerMessage(m);
+    if (kill(pidClient, SIGUSR1) == -1)
+  {
+    fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de kill()\n", pidServeur);
+  }
 }
+int rechercheUser(char* nom)
+{
+  for(int i=0; i<6; i++)
+  {
+    if(strcmp(tab->connexions[i].nom, nom)==0)
+    {
+      printf("\n\nClient trouve pour accept en position %d\n\n", i);
+      return(i);
+    }
+  }
+  return(-1);
 
+}
+void acceptUser(char*nom, int pid)
+{
+  int i,j ;
+  i= rechercheUser(nom);
+  for(j = 0; j<6;j++)
+  {
+    if (tab->connexions[i].autres[j] == 0) 
+      {
+            printf("on insere en position : %d\n\n", j);
+
+        break;
+      }
+  }
+
+  tab->connexions[i].autres[j] = pid;
+}
+void refuseUser(char*nom, int pid)
+{
+  int i,j;
+  i = rechercheUser(nom);
+  for( j = 0; j<6;j++)
+  {
+    if (tab->connexions[i].autres[j] == pid) break;
+  }
+  tab->connexions[i].autres[j] = 0;
+
+}
 
 
 

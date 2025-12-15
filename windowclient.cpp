@@ -20,9 +20,10 @@ char* pShm;
 bool logged;
 void handlerSIGUSR1(int sig);
 void handlerSIGUSR2(int sig);
+void accept_user(char* nom);
+void refuse_user(char* nom);
 int timeOut = TIME_OUT;
 
-void handlerSIGUSR1(int sig);
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -482,7 +483,21 @@ void WindowClient::on_pushButtonLogout_clicked()
 
 void WindowClient::on_pushButtonEnvoyer_clicked()
 {
-    // TO DO
+    ajouteMessage(getNom(), getAEnvoyer());
+    MESSAGE m;
+    m.type = 1;
+    m.requete = SEND;
+    m.expediteur= pidClient;
+    m.data1= getNom;
+    m.texte= getAEnvoyer;
+    if (msgsnd(idQ, &message, sizeof(MESSAGE) - sizeof(long), 0) == -1)
+  {
+    dialogueErreur("Erreur", "Impossible d'envoyer le message");
+    fprintf(stderr, "(CLIENT %d) (ERROR) Erreur de msgsnd()\n", pidClient);
+  }
+  printf("(
+
+
 }
 
 void WindowClient::on_pushButtonConsulter_clicked()
@@ -528,91 +543,146 @@ void WindowClient::on_pushButtonModifier_clicked()
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void WindowClient::on_checkBox1_clicked(bool checked)
 {
+  char nom[20];
+  strcpy(nom,w->getPersonneConnectee(1));
+
     if (checked)
     {
         ui->checkBox1->setText("Accepté");
+        accept_user(nom);
         // TO DO (etape 2)
     }
     else
     {
         ui->checkBox1->setText("Refusé");
+        refuse_user(nom);
         // TO DO (etape 2)
     }
 }
 
 void WindowClient::on_checkBox2_clicked(bool checked)
 {
+char nom[20];
+strcpy(nom,w->getPersonneConnectee(2));
     if (checked)
     {
         ui->checkBox2->setText("Accepté");
+        accept_user(nom);
         // TO DO (etape 2)
     }
     else
     {
         ui->checkBox2->setText("Refusé");
+        refuse_user(nom);
         // TO DO (etape 2)
     }
 }
 
 void WindowClient::on_checkBox3_clicked(bool checked)
 {
+char nom[20];
+strcpy(nom,w->getPersonneConnectee(3));
+
     if (checked)
     {
         ui->checkBox3->setText("Accepté");
+        accept_user(nom);
         // TO DO (etape 2)
     }
     else
     {
         ui->checkBox3->setText("Refusé");
+        refuse_user(nom);
         // TO DO (etape 2)
     }
 }
 
 void WindowClient::on_checkBox4_clicked(bool checked)
 {
+char nom[20];
+strcpy(nom,w->getPersonneConnectee(4));
+
     if (checked)
     {
         ui->checkBox4->setText("Accepté");
+        accept_user(nom);
         // TO DO (etape 2)
     }
     else
     {
         ui->checkBox4->setText("Refusé");
+        refuse_user(nom);
         // TO DO (etape 2)
     }
 }
 
 void WindowClient::on_checkBox5_clicked(bool checked)
 {
+char nom[20];
+strcpy(nom,w->getPersonneConnectee(5));
+
     if (checked)
     {
         ui->checkBox5->setText("Accepté");
+        accept_user(nom);
         // TO DO (etape 2)
     }
     else
     {
         ui->checkBox5->setText("Refusé");
+        refuse_user(nom);
         // TO DO (etape 2)
     }
 }
 
+void accept_user(char* nom)
+{
+  printf("%s", nom);
+  MESSAGE message;
+    message.type = 1;
+    message.requete = ACCEPT_USER;
+    message.expediteur = pidClient;
+    strcpy(message.data1, nom);
+  if (msgsnd(idQ, &message, sizeof(MESSAGE) - sizeof(long), 0) == -1)
+  {
+    fprintf(stderr, "(CLIENT %d) (ERROR) Erreur de msgsnd()\n", pidClient);
+  }
+}
+void refuse_user(char* nom)
+{
+  MESSAGE message;
+    message.type = 1;
+    message.requete = REFUSE_USER;
+    message.expediteur = pidClient;
+    strcpy(message.data1, nom);
+
+
+  if (msgsnd(idQ, &message, sizeof(MESSAGE) - sizeof(long), 0) == -1)
+  {
+    fprintf(stderr, "(CLIENT %d) (ERROR) Erreur de msgsnd()\n", pidClient);
+  }
+}
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ///// Handlers de signaux ////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void handlerSIGUSR1(int sig)
 {
     MESSAGE m;
-  
+  printf("handler est appelé\n");
   if (msgrcv(idQ, &m, sizeof(MESSAGE) - sizeof(long), pidClient, 0) == -1)
   {
     fprintf(stderr, "(CLIENT %d) (ERROR) Erreur de msgrcv\n", pidClient);
     return;
   }
+          printf("request received\n");
+          printf("requête recue du type %ld\n", m.requete);
+
     
       switch(m.requete)
       {
+
         case LOGIN :
-                    printf("request received\n");
+        printf("login request received \n");
                     if (strcmp(m.data1,"OK") == 0)
                     {
                       fprintf(stderr,"(CLIENT %d) Login OK\n",getpid());
@@ -624,11 +694,39 @@ void handlerSIGUSR1(int sig)
                     break;
 
         case ADD_USER :
-                    // TO DO
+                       printf("adduser recu\n");
+
+                      if (strcmp(m.data1,"OK") == 0)
+                      {
+                        printf("ok passé\n");
+                       for(int i =1; i<6; i++)
+                        {
+                          if(strcmp(w->getPersonneConnectee(i),"")==0)
+                          {
+                            printf("emplacement vide trouvé a la position %d\n",i);
+                            w->setPersonneConnectee(i,m.data2);
+                            break;
+                          }
+
+                        }
+                      }
                     break;
 
         case REMOVE_USER :
-                    // TO DO
+                      printf("je retire mon user \n\n");
+                    if (strcmp(m.data1,"OK") == 0)
+                      {
+                        printf("ok passé\n");
+                       for(int i =1; i<6; i++)
+                        {
+                          if(strcmp(w->getPersonneConnectee(i), m.data2) ==0)
+                          {
+                            printf("user trouvé a la position %d\n\n",i);
+                            w->setPersonneConnectee(i,"");
+                          }
+
+                        }
+                      }
                     break;
 
         case SEND :
@@ -638,6 +736,8 @@ void handlerSIGUSR1(int sig)
         case CONSULT :
                   // TO DO
                   break;
+        default: printf("requete random recue \n");
+        break;
       }
 }
 
