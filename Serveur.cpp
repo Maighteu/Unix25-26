@@ -119,8 +119,7 @@ int main()
   afficheTab();
 
   // Creation du processus Publicite
-   int idFils, idPub;
- idPub = fork();
+   int idPub = fork();
  if(idPub==0)
  {
    if(execl("./Publicite", "Publicite", NULL)==-1)
