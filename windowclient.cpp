@@ -20,8 +20,10 @@ char* pShm;
 bool logged;
 void handlerSIGUSR1(int sig);
 void handlerSIGUSR2(int sig);
+void handlerSIGALRM(int sig);
 void accept_user(char* nom);
 void refuse_user(char* nom);
+void restartAlarm();
 int timeOut = TIME_OUT;
 
 
@@ -66,7 +68,7 @@ WindowClient::WindowClient(QWidget *parent):QMainWindow(parent),ui(new Ui::Windo
 
 ///////////////////////////////////////////////////////
     // Armement des signaux
-    struct sigaction sig,sig2;
+    struct sigaction sig,sig2, sigA;
     sigfillset(&sig.sa_mask);
     sigdelset(&sig.sa_mask, SIGUSR1);
     sig.sa_handler = handlerSIGUSR1;
@@ -90,6 +92,18 @@ WindowClient::WindowClient(QWidget *parent):QMainWindow(parent),ui(new Ui::Windo
       exit(1);
     }
     printf("(CLIENT %d) (SUCCESS) Signal SIGUSR2 arme\n", pidClient);
+
+    sigfillset(&sigA.sa_mask);
+      sigdelset(&sigA.sa_mask, SIGALRM);
+      sigA.sa_handler = handlerSIGALRM;
+      sigA.sa_flags = 0;
+
+    if (sigaction(SIGALRM, &sigA, NULL) == -1)
+    {
+      fprintf(stderr, "(CLIENT %d) (ERROR) Erreur d'armement du signal SIGALRM.", pidClient);
+      exit(1);
+    }
+    printf("(CLIENT %d) (SUCCESS) Signal SIGALRM arme\n", pidClient);
 
 
 //////////////////////////////////////////////
@@ -442,6 +456,7 @@ void WindowClient::closeEvent(QCloseEvent *event)
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void WindowClient::on_pushButtonLogin_clicked()
 {
+  alarm(1);
     MESSAGE message;
     message.type = 1;
     message.requete = LOGIN;
@@ -478,7 +493,9 @@ void WindowClient::on_pushButtonLogout_clicked()
 
   logged = false;
   logoutOK();
+  alarm(0);
   dialogueMessage("Déconnexion", "Vous êtes maitenant déconnecté.");
+
 }
 
 void WindowClient::on_pushButtonEnvoyer_clicked()
@@ -488,22 +505,22 @@ void WindowClient::on_pushButtonEnvoyer_clicked()
     m.type = 1;
     m.requete = SEND;
     m.expediteur= pidClient;
-    m.data1= getNom;
-    m.texte= getAEnvoyer;
-    if (msgsnd(idQ, &message, sizeof(MESSAGE) - sizeof(long), 0) == -1)
+    strcpy(m.data1, getNom());
+    strcpy(m.texte, getAEnvoyer());
+    if (msgsnd(idQ, &m, sizeof(MESSAGE) - sizeof(long), 0) == -1)
   {
     dialogueErreur("Erreur", "Impossible d'envoyer le message");
     fprintf(stderr, "(CLIENT %d) (ERROR) Erreur de msgsnd()\n", pidClient);
   }
-  printf("(
-
+  setAEnvoyer("");
+  restartAlarm();
 
 }
 
 void WindowClient::on_pushButtonConsulter_clicked()
 {
     // TO DO
-
+restartAlarm();
 }
 
 void WindowClient::on_pushButtonModifier_clicked()
@@ -536,6 +553,7 @@ void WindowClient::on_pushButtonModifier_clicked()
 
   // Envoi des données modifiées au serveur
   // ...
+  restartAlarm();
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -558,6 +576,7 @@ void WindowClient::on_checkBox1_clicked(bool checked)
         refuse_user(nom);
         // TO DO (etape 2)
     }
+    restartAlarm();
 }
 
 void WindowClient::on_checkBox2_clicked(bool checked)
@@ -576,6 +595,7 @@ strcpy(nom,w->getPersonneConnectee(2));
         refuse_user(nom);
         // TO DO (etape 2)
     }
+    restartAlarm();
 }
 
 void WindowClient::on_checkBox3_clicked(bool checked)
@@ -595,6 +615,7 @@ strcpy(nom,w->getPersonneConnectee(3));
         refuse_user(nom);
         // TO DO (etape 2)
     }
+    restartAlarm();
 }
 
 void WindowClient::on_checkBox4_clicked(bool checked)
@@ -614,6 +635,7 @@ strcpy(nom,w->getPersonneConnectee(4));
         refuse_user(nom);
         // TO DO (etape 2)
     }
+    restartAlarm();
 }
 
 void WindowClient::on_checkBox5_clicked(bool checked)
@@ -633,6 +655,7 @@ strcpy(nom,w->getPersonneConnectee(5));
         refuse_user(nom);
         // TO DO (etape 2)
     }
+    restartAlarm();
 }
 
 void accept_user(char* nom)
@@ -662,6 +685,20 @@ void refuse_user(char* nom)
     fprintf(stderr, "(CLIENT %d) (ERROR) Erreur de msgsnd()\n", pidClient);
   }
 }
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///// ajout perso ////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void restartAlarm()
+{
+  alarm(0);
+  timeOut=TIME_OUT;
+    w->setTimeOut(timeOut);
+
+  alarm(1);
+}
+
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ///// Handlers de signaux ////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -730,7 +767,9 @@ void handlerSIGUSR1(int sig)
                     break;
 
         case SEND :
-                    // TO DO
+        printf("j'ai reçu une message\n\n");
+                    w->ajouteMessage(m.data1, m.texte);
+
                     break;
 
         case CONSULT :
@@ -743,6 +782,22 @@ void handlerSIGUSR1(int sig)
 
 void handlerSIGUSR2(int sig)
 {
-  printf("salut");
+  
+
+  w->setPublicite(pShm);
   
 }
+void handlerSIGALRM(int signal)
+{
+  timeOut -= 1;
+  w->setTimeOut(timeOut);
+
+  if(timeOut == 0)
+  {
+    w->on_pushButtonLogout_clicked();
+    alarm(0);
+    return;
+  }
+  alarm(1);
+}
+

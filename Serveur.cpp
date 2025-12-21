@@ -17,7 +17,6 @@
 #include "Login.h"
 #define FICHIER_CLIENTS "user.dat"
 
-
 int idQ,idShm,idSem, pidServeur = getpid();
 int fdPipe[2];
 TAB_CONNEXIONS *tab;
@@ -32,10 +31,13 @@ void handlerSIGINT(int signal);
 void handlerSIGCHLD(int signal);
 void closing(int codeSortie);
 void logClient(int pidClient, char* nouveauClient, char* identifiant, char* password);
+void sendToSelectedUser(int pidClient, char* nom, char* message);
 void unlogClient(int pidClient);
 void acceptUser(char *nom, int pid);
 void refuseUser(char *nom, int pid);
+void sendPub();
 int rechercheClient(char *nom);
+void handlerSIGALRM(int signal);
 MYSQL* connexion;
 
 
@@ -117,6 +119,16 @@ int main()
   afficheTab();
 
   // Creation du processus Publicite
+   int idFils, idPub;
+ idPub = fork();
+ if(idPub==0)
+ {
+   if(execl("./Publicite", "Publicite", NULL)==-1)
+   {
+     perror("Serveur erreur de execl");
+     exit(1);
+   }
+ }
 
   int i,k,j;
   MESSAGE m;
@@ -171,10 +183,12 @@ int main()
 
       case SEND :  
                       fprintf(stderr,"(SERVEUR %d) Requete SEND reçue de %d\n",getpid(),m.expediteur);
+                      sendToSelectedUser(m.expediteur, m.data1, m.texte);
                       break; 
 
       case UPDATE_PUB :
                       fprintf(stderr,"(SERVEUR %d) Requete UPDATE_PUB reçue de %d\n",getpid(),m.expediteur);
+                        sendPub();
                       break;
 
       case CONSULT :
@@ -283,7 +297,10 @@ void disconnectClient(int pidClient)
   {
     if( posClient != i  && strcmp(tab->connexions[i].nom,""))
     {
-      
+      for(int j=0; j<6;j++)
+      {
+        tab->connexions[i].autres[j] = 0;
+      }
       reponse.type = tab->connexions[i].pidFenetre;
         reponse.expediteur = pidServeur;
         reponse.requete = REMOVE_USER;
@@ -536,6 +553,10 @@ void unlogClient(int pidClient)
   {
     if( posClient != i  && strcmp(tab->connexions[i].nom,""))
     {
+       for(int j=0; j<6;j++)
+      {
+        tab->connexions[i].autres[j] = 0;
+      }
       
       reponse.type = tab->connexions[i].pidFenetre;
         reponse.expediteur = pidServeur;
@@ -576,7 +597,7 @@ int rechercheUser(char* nom)
   {
     if(strcmp(tab->connexions[i].nom, nom)==0)
     {
-      printf("\n\nClient trouve pour accept en position %d\n\n", i);
+      printf("\n\nClient trouve pour la recherche en position %d\n\n", i);
       return(i);
     }
   }
@@ -610,8 +631,44 @@ void refuseUser(char*nom, int pid)
   tab->connexions[i].autres[j] = 0;
 
 }
+void sendToSelectedUser(int pidClient, char* nom, char* message)
+{
+  printf("debut de l'action envoi\n\n");
+  int j;
+  int i = rechercheUser(nom);
+  MESSAGE m;
+  m.requete = SEND;
+  m.expediteur = pidServeur;
+  strcpy(m.data1, nom);
+  strcpy(m.texte, message);
+  for(j = 0; j<6;j++)
+  {
+    if (tab->connexions[i].autres[j] != 0) 
+      {
+        printf("personne trouvée pour envoi message\n\n");
+        m.type = tab->connexions[i].autres[j];
+        envoyerMessage(m);
+        if (kill(tab->connexions[i].autres[j], SIGUSR1) == -1)
+        {
+          printf("Reponse ne s'envoie pas \n");
+          fprintf(stderr, "(SERVEUR %d) (ERROR) Erreur de kill()\n", pidServeur);
+        }
+        break;
+      }
+  }
 
+}
 
+void sendPub()
+{
+  for(int i = 0; i<6; i++)
+  {
+    if(tab->connexions[i].pidFenetre!=0)
+    {
+      kill(tab->connexions[i].pidFenetre,SIGUSR2);
+    }
+  }
+}
 
 void handlerSIGINT(int signal)
 {
